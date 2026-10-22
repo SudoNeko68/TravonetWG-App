@@ -180,4 +180,21 @@ PersistentKeepalive = 25"""
     fun setSocksListenAddr(addr: String) {
         prefs.edit().putString("socks_listen_addr", addr).apply()
     }
+
+    // WARP registration relay
+    fun getWarpRelayUrl(): String {
+        return prefs.getString("warp_relay_url", "") ?: ""
+    }
+
+    fun setWarpRelayUrl(url: String) {
+        prefs.edit().putString("warp_relay_url", url.trim()).apply()
+    }
+
+    fun getWarpRelayToken(): String {
+        return prefs.getString("warp_relay_token", "") ?: ""
+    }
+
+    fun setWarpRelayToken(token: String) {
+        prefs.edit().putString("warp_relay_token", token.trim()).apply()
+    }
 }

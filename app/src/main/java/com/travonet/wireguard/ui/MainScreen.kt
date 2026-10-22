@@ -19,8 +19,15 @@ import com.travonet.wireguard.repository.AppRepository
 import com.travonet.wireguard.service.TunnelManager
 import com.travonet.wireguard.ui.components.BottomControlBar
 import com.travonet.wireguard.ui.dialogs.SocksSettingsDialog
+import com.travonet.wireguard.ui.dialogs.WarpProgressDialog
+import com.travonet.wireguard.ui.dialogs.WarpRelayDialog
+import com.travonet.wireguard.ui.dialogs.WarpUiState
 import com.travonet.wireguard.ui.screens.ConfigsScreen
 import com.travonet.wireguard.ui.screens.StrategiesScreen
+import com.travonet.wireguard.warp.WarpGenerator
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.launch
+import kotlinx.coroutines.withContext
 import org.travonet.backend.GoBackend
 
 @OptIn(ExperimentalMaterial3Api::class)
@@ -45,11 +52,45 @@ fun MainScreen(
     var showSocksSettings by remember { mutableStateOf(false) }
     var showInfoDialog by remember { mutableStateOf(false) }
 
+    var warpUiState by remember { mutableStateOf<WarpUiState?>(null) }
+    var showWarpRelayDialog by remember { mutableStateOf(false) }
+    var warpRelayUrl by remember { mutableStateOf(repository.getWarpRelayUrl()) }
+    var warpRelayToken by remember { mutableStateOf(repository.getWarpRelayToken()) }
+    val scope = rememberCoroutineScope()
+
     val tunnelState by TunnelManager.state.collectAsState()
     val tunnelStats by TunnelManager.stats.collectAsState()
 
     val activeFallbackStrategy = remember(strategies, selectedStrategyId) {
         strategies.firstOrNull { it.id == selectedStrategyId } ?: strategies.first()
+    }
+
+    fun generateWarp() {
+        if (warpUiState is WarpUiState.Running) return
+
+        val name = WarpGenerator.nextName(profiles)
+        val relayUrl = warpRelayUrl
+        val relayToken = warpRelayToken
+        warpUiState = WarpUiState.Running
+
+        scope.launch {
+            val result = withContext(Dispatchers.IO) {
+                runCatching { WarpGenerator.generate(name, relayUrl, relayToken) }
+            }
+            result.onSuccess { profile ->
+                repository.addOrUpdateProfile(profile)
+                profiles = repository.getProfiles()
+                selectedProfileId = profile.id
+                repository.setSelectedProfileId(profile.id)
+                selectedTab = 0
+                warpUiState = WarpUiState.Success(profile.name, profile.endpoint)
+            }.onFailure { error ->
+                warpUiState = WarpUiState.Failure(
+                    error.message?.takeIf { it.isNotBlank() }
+                        ?: "Ошибка ${error.javaClass.simpleName}"
+                )
+            }
+        }
     }
 
     Scaffold(
@@ -76,6 +117,12 @@ fun MainScreen(
                     actions = {
                         IconButton(onClick = { showSocksSettings = true }) {
                             Icon(Icons.Default.Settings, contentDescription = "Настройки SOCKS5")
+                        }
+                        IconButton(
+                            onClick = { generateWarp() },
+                            enabled = warpUiState !is WarpUiState.Running
+                        ) {
+                            Icon(Icons.Default.Cloud, contentDescription = "Сгенерировать WARP")
                         }
                         IconButton(onClick = { showInfoDialog = true }) {
                             Icon(Icons.Default.Info, contentDescription = "О программе")
@@ -235,6 +282,39 @@ fun MainScreen(
                     Text("Понятно")
                 }
             }
+        )
+    }
+
+    warpUiState?.let { state ->
+        WarpProgressDialog(
+            state = state,
+            relayConfigured = warpRelayUrl.isNotBlank(),
+            onDismiss = { warpUiState = null },
+            onRetry = { generateWarp() },
+            onConfigureRelay = {
+                warpUiState = null
+                showWarpRelayDialog = true
+            }
+        )
+    }
+
+    if (showWarpRelayDialog) {
+        WarpRelayDialog(
+            currentUrl = warpRelayUrl,
+            currentToken = warpRelayToken,
+            onSave = { url, token ->
+                warpRelayUrl = url
+                warpRelayToken = token
+                repository.setWarpRelayUrl(url)
+                repository.setWarpRelayToken(token)
+                showWarpRelayDialog = false
+                Toast.makeText(
+                    context,
+                    if (url.isBlank()) "Релей WARP отключён" else "Релей WARP сохранён",
+                    Toast.LENGTH_SHORT
+                ).show()
+            },
+            onDismiss = { showWarpRelayDialog = false }
         )
     }
 }

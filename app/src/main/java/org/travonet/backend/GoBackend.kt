@@ -54,4 +54,20 @@ object GoBackend {
 
     @JvmStatic
     external fun wgGetSocks5SocketV6(handle: Int): Int
+
+    // --- Генерация WARP (Cloudflare) ---
+    // Возвращает JSON {"private_key": "...", "public_key": "..."}.
+    @JvmStatic
+    external fun wgGenerateKeypair(): String?
+
+    // Регистрирует анонимное устройство WARP и возвращает сырой JSON API.
+    // relayUrl/relayToken могут быть пустыми — тогда только прямые попытки.
+    @JvmStatic
+    external fun wgRegisterWarp(
+        publicKey: String,
+        locale: String,
+        model: String,
+        relayUrl: String,
+        relayToken: String
+    ): String?
 }
