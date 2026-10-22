@@ -1,0 +1,231 @@
+package com.travonet.wireguard.parser
+
+import com.travonet.wireguard.model.DefaultStrategies
+import com.travonet.wireguard.model.EvasionStrategy
+import com.travonet.wireguard.model.WgProfile
+
+object WgConfigParser {
+
+    data class ParsedInterface(
+        val privateKey: String = "",
+        val addresses: List<String> = emptyList(),
+        val dnsServers: List<String> = emptyList(),
+        val mtu: Int = 1280,
+        val strategy: String? = null,
+        val fakeTtl: String? = null,
+        val preJunk: Int? = null,
+        val normalTtl: Int? = null
+    )
+
+    data class ParsedPeer(
+        val publicKey: String = "",
+        val endpoint: String = "",
+        val allowedIps: List<String> = emptyList(),
+        val persistentKeepalive: Int? = null
+    )
+
+    data class ParsedConfig(
+        val iface: ParsedInterface,
+        val peers: List<ParsedPeer>
+    )
+
+    fun parse(rawContent: String): ParsedConfig {
+        var currentSection = ""
+        var privateKey = ""
+        val addresses = mutableListOf<String>()
+        val dnsServers = mutableListOf<String>()
+        var mtu = 1280
+        var strategy: String? = null
+        var fakeTtl: String? = null
+        var preJunk: Int? = null
+        var normalTtl: Int? = null
+
+        val peers = mutableListOf<ParsedPeer>()
+        var currentPeerKey = ""
+        var currentPeerEndpoint = ""
+        var currentPeerAllowedIps = mutableListOf<String>()
+        var currentPeerKeepalive: Int? = null
+
+        fun savePeer() {
+            if (currentPeerKey.isNotEmpty() || currentPeerEndpoint.isNotEmpty()) {
+                peers.add(
+                    ParsedPeer(
+                        publicKey = currentPeerKey,
+                        endpoint = currentPeerEndpoint,
+                        allowedIps = currentPeerAllowedIps.toList(),
+                        persistentKeepalive = currentPeerKeepalive
+                    )
+                )
+            }
+            currentPeerKey = ""
+            currentPeerEndpoint = ""
+            currentPeerAllowedIps = mutableListOf()
+            currentPeerKeepalive = null
+        }
+
+        rawContent.lines().forEach { line ->
+            val trimmed = line.trim()
+            if (trimmed.isEmpty() || trimmed.startsWith("#") || trimmed.startsWith(";")) {
+                return@forEach
+            }
+
+            if (trimmed.startsWith("[") && trimmed.endsWith("]")) {
+                val sec = trimmed.substring(1, trimmed.length - 1).trim().lowercase()
+                if (currentSection == "peer") {
+                    savePeer()
+                }
+                currentSection = sec
+                return@forEach
+            }
+
+            val parts = trimmed.split("=", limit = 2)
+            if (parts.size != 2) return@forEach
+            val key = parts[0].trim().lowercase()
+            val value = parts[1].trim().split("#")[0].split(";")[0].trim()
+
+            when (currentSection) {
+                "interface" -> {
+                    when (key) {
+                        "privatekey" -> privateKey = value
+                        "address" -> {
+                            value.split(",").forEach { addr ->
+                                val clean = addr.trim()
+                                if (clean.isNotEmpty()) addresses.add(clean)
+                            }
+                        }
+                        "dns" -> {
+                            value.split(",").forEach { dns ->
+                                val clean = dns.trim()
+                                if (clean.isNotEmpty()) dnsServers.add(clean)
+                            }
+                        }
+                        "mtu" -> mtu = value.toIntOrNull() ?: 1280
+                        "strategy" -> if (value.isNotEmpty()) strategy = value
+                        "fakettl" -> if (value.isNotEmpty()) fakeTtl = value
+                        "prejunk" -> preJunk = value.toIntOrNull()
+                        "normalttl" -> normalTtl = value.toIntOrNull()
+                    }
+                }
+                "peer" -> {
+                    when (key) {
+                        "publickey" -> currentPeerKey = value
+                        "endpoint" -> currentPeerEndpoint = value
+                        "allowedips" -> {
+                            value.split(",").forEach { ip ->
+                                val clean = ip.trim()
+                                if (clean.isNotEmpty()) currentPeerAllowedIps.add(clean)
+                            }
+                        }
+                        "persistentkeepalive" -> currentPeerKeepalive = value.toIntOrNull()
+                    }
+                }
+            }
+        }
+
+        if (currentSection == "peer") {
+            savePeer()
+        }
+
+        return ParsedConfig(
+            iface = ParsedInterface(
+                privateKey = privateKey,
+                addresses = addresses,
+                dnsServers = dnsServers,
+                mtu = mtu,
+                strategy = strategy,
+                fakeTtl = fakeTtl,
+                preJunk = preJunk,
+                normalTtl = normalTtl
+            ),
+            peers = peers
+        )
+    }
+
+    fun parseProfile(name: String, rawConfig: String, id: String? = null): WgProfile {
+        val parsed = parse(rawConfig)
+        val endpoint = parsed.peers.firstOrNull()?.endpoint ?: ""
+        val address = parsed.iface.addresses.joinToString(", ")
+        val allowedIps = parsed.peers.flatMap { it.allowedIps }.joinToString(", ")
+        val dns = parsed.iface.dnsServers.joinToString(", ")
+        val hasStrategy = !parsed.iface.strategy.isNullOrBlank()
+
+        return WgProfile(
+            id = id ?: java.util.UUID.randomUUID().toString(),
+            name = name,
+            rawConfig = rawConfig,
+            endpoint = endpoint,
+            address = address,
+            allowedIps = allowedIps,
+            dns = dns,
+            mtu = parsed.iface.mtu,
+            hasEmbeddedStrategy = hasStrategy,
+            embeddedStrategy = parsed.iface.strategy
+        )
+    }
+
+    /**
+     * Готовит конфиг для GoBackend.
+     *
+     * Если в `[Interface]` уже есть `Strategy` (или `NoEvasion`), конфиг не
+     * трогаем. Иначе внедряем выбранный в UI пресет:
+     *  - обычный DSL → `Strategy` + `FakeTTL`/`PreJunk`/`NormalTTL`;
+     *  - пустой DSL или алиас («none», «off», «clean») → `NoEvasion = true`.
+     *
+     * Раньше пустой DSL означал «ничего не внедрять», и ядро включало свою
+     * стратегию по умолчанию — то есть «Чистый WireGuard» на деле не был чистым.
+     */
+    fun prepareConfigForLaunch(profile: WgProfile, fallbackStrategy: EvasionStrategy?): String {
+        val parsed = parse(profile.rawConfig)
+        if (!parsed.iface.strategy.isNullOrBlank()) return profile.rawConfig
+        if (isNoEvasionSet(profile.rawConfig)) return profile.rawConfig
+        if (fallbackStrategy == null) return profile.rawConfig
+
+        val directives = if (DefaultStrategies.isNoEvasion(fallbackStrategy.dsl)) {
+            listOf(
+                "# Injected by TravonetWG: evasion disabled",
+                "NoEvasion = true"
+            )
+        } else {
+            listOf(
+                "# Injected by TravonetWG Evasion Strategy: ${fallbackStrategy.name}",
+                "Strategy = ${fallbackStrategy.dsl}",
+                "FakeTTL = ${fallbackStrategy.fakeTtl}",
+                "PreJunk = ${fallbackStrategy.preJunk}",
+                "NormalTTL = ${fallbackStrategy.normalTtl}"
+            )
+        }
+
+        return injectIntoInterface(profile.rawConfig, directives)
+    }
+
+    /** `NoEvasion = true` (а также `no_evasion`/`disable_evasion`) в исходном конфиге. */
+    private fun isNoEvasionSet(rawConfig: String): Boolean {
+        val keys = setOf("noevasion", "no_evasion", "disable_evasion")
+        val truthy = setOf("1", "true", "yes", "on")
+        rawConfig.lineSequence().forEach { line ->
+            val trimmed = line.trim()
+            if (trimmed.startsWith("#") || trimmed.startsWith(";")) return@forEach
+            val parts = trimmed.split("=", limit = 2)
+            if (parts.size != 2) return@forEach
+            if (parts[0].trim().lowercase() !in keys) return@forEach
+            val value = parts[1].substringBefore('#').substringBefore(';').trim().lowercase()
+            if (value in truthy) return true
+        }
+        return false
+    }
+
+    /** Вставляет строки сразу после заголовка `[Interface]`. */
+    private fun injectIntoInterface(rawConfig: String, directives: List<String>): String {
+        val sb = StringBuilder()
+        var injected = false
+        rawConfig.lines().forEach { line ->
+            sb.appendLine(line)
+            if (!injected && line.trim().equals("[Interface]", ignoreCase = true)) {
+                directives.forEach { sb.appendLine(it) }
+                injected = true
+            }
+        }
+        // Без секции [Interface] это не .conf-файл: оставляем как есть.
+        return if (injected) sb.toString() else rawConfig
+    }
+}
