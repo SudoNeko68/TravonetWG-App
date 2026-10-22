@@ -2,6 +2,7 @@ package com.travonet.wireguard.repository
 
 import android.content.Context
 import android.content.SharedPreferences
+import com.travonet.wireguard.BuildConfig
 import com.travonet.wireguard.model.DefaultStrategies
 import com.travonet.wireguard.model.EvasionStrategy
 import com.travonet.wireguard.model.TunnelMode
@@ -181,9 +182,10 @@ PersistentKeepalive = 25"""
         prefs.edit().putString("socks_listen_addr", addr).apply()
     }
 
-    // WARP registration relay
+    // WARP registration relay. A value saved by the user wins; otherwise the
+    // build default is used (empty when the build has no relay).
     fun getWarpRelayUrl(): String {
-        return prefs.getString("warp_relay_url", "") ?: ""
+        return prefs.getString("warp_relay_url", null) ?: BuildConfig.WARP_RELAY_URL
     }
 
     fun setWarpRelayUrl(url: String) {
@@ -191,7 +193,7 @@ PersistentKeepalive = 25"""
     }
 
     fun getWarpRelayToken(): String {
-        return prefs.getString("warp_relay_token", "") ?: ""
+        return prefs.getString("warp_relay_token", null) ?: BuildConfig.WARP_RELAY_TOKEN
     }
 
     fun setWarpRelayToken(token: String) {
