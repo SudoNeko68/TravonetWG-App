@@ -174,6 +174,9 @@ object WarpGenerator {
             appendLine("Address = $addresses")
             appendLine("DNS = 1.1.1.1, 1.0.0.1, 2606:4700:4700::1111, 2606:4700:4700::1001")
             appendLine("MTU = 1280")
+            registration.reserved?.takeIf { it.isNotBlank() }?.let {
+                appendLine("Reserved = $it")
+            }
             appendLine()
             appendLine("[Peer]")
             appendLine("PublicKey = ${registration.peerPublicKey}")

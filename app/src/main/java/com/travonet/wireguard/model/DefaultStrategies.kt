@@ -29,9 +29,19 @@ object DefaultStrategies {
     val ALL: List<EvasionStrategy> = listOf(
         EvasionStrategy(
             id = "strat_tspu_default",
-            name = "Стандартная ТСПУ (Рекомендуемая)",
-            description = "Полный userspace-конвейер: мимикрия под QUIC и STUN, крупный jumbo-фейк, фейковый handshake с опциями IP и короткой паузой. Работает без root.",
-            dsl = "mimic(quic) -> mimic(stun) -> jumbo_fake(size=1600) -> fake_udp(size=148, ipopt=ts, corrupt=true) -> sleep(2ms)",
+            name = "Мобильная сеть / Wi-Fi (Рекомендуемая)",
+            description = "Безопасный для LTE/5G конвейер: QUIC + STUN, junk 64 байта, повреждённый fake-handshake и пауза 15 мс. Без фрагментов и IP Options, поэтому пакеты не теряются в сотовой сети.",
+            dsl = "mimic(quic) -> mimic(stun) -> junk(size=64) -> fake_udp(size=148, corrupt=true) -> sleep(15ms)",
+            fakeTtl = "auto",
+            preJunk = 64,
+            normalTtl = 64,
+            isCustom = false
+        ),
+        EvasionStrategy(
+            id = "strat_broadband",
+            name = "Проводной интернет / Wi-Fi (jumbo)",
+            description = "Старый конвейер с jumbo_fake 1600 байт и IP Options. Подходит для домашнего проводного интернета, но в LTE/5G такие пакеты часто отбрасываются.",
+            dsl = "mimic(quic) -> mimic(stun) -> jumbo_fake(size=1600) -> fake_udp(size=148, ipopt=ts) -> sleep(2ms)",
             fakeTtl = "auto",
             preJunk = 64,
             normalTtl = 64,
