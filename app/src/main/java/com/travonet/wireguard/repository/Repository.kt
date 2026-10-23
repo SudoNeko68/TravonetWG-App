@@ -8,7 +8,6 @@ import com.travonet.wireguard.model.EvasionStrategy
 import com.travonet.wireguard.model.TunnelMode
 import com.travonet.wireguard.model.WarpRelayMode
 import com.travonet.wireguard.model.WgProfile
-import com.travonet.wireguard.parser.WgConfigParser
 import org.json.JSONArray
 import org.json.JSONObject
 
@@ -20,26 +19,18 @@ class AppRepository(context: Context) {
         // Пресеты живут в отдельном объекте, чтобы их можно было проверить unit-тестами.
         val DEFAULT_STRATEGIES = DefaultStrategies.ALL
 
-        private const val SAMPLE_CONFIG = """[Interface]
-PrivateKey = OCugIHnrk/r8Zdtd5AGYIchdMag+dqXF08yn1AZ2aUw=
-Address = 172.16.0.2/32
-DNS = 1.1.1.1, 8.8.8.8
-MTU = 1280
-
-[Peer]
-PublicKey = bmXOC+F1FxEMF9dyiK2H5/1SUtzH0JuVo51h2wPfgyo=
-Endpoint = 162.159.192.1:2408
-AllowedIPs = 0.0.0.0/0
-PersistentKeepalive = 25"""
+        // Раньше приложение при первом запуске создавало этот демо-профиль.
+        // Оставляем идентификатор, чтобы удалить его у тех, кто уже обновился.
+        private const val LEGACY_SAMPLE_NAME = "Демо-сервер WireGuard (Пример)"
+        private const val LEGACY_SAMPLE_PRIVATE_KEY =
+            "OCugIHnrk/r8Zdtd5AGYIchdMag+dqXF08yn1AZ2aUw="
     }
 
     // Profiles
     fun getProfiles(): List<WgProfile> {
         val raw = prefs.getString("wg_profiles", null)
         if (raw.isNullOrBlank()) {
-            val sample = WgConfigParser.parseProfile("Демо-сервер WireGuard (Пример)", SAMPLE_CONFIG)
-            saveProfiles(listOf(sample))
-            return listOf(sample)
+            return emptyList()
         }
         return try {
             val array = JSONArray(raw)
@@ -47,23 +38,28 @@ PersistentKeepalive = 25"""
             var needsResave = false
             for (i in 0 until array.length()) {
                 val p = WgProfile.fromJson(array.getJSONObject(i))
-                if (p.rawConfig.contains("aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa")) {
-                    val fixed = p.copy(rawConfig = p.rawConfig
-                        .replace("aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa", "OCugIHnrk/r8Zdtd5AGYIchdMag+dqXF08yn1AZ2aUw=")
-                        .replace("bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb", "bmXOC+F1FxEMF9dyiK2H5/1SUtzH0JuVo51h2wPfgyo="))
-                    list.add(fixed)
+                if (isLegacySample(p) || p.rawConfig.contains("aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa")) {
                     needsResave = true
-                } else {
-                    list.add(p)
+                    continue
                 }
+                list.add(p)
             }
             if (needsResave) {
                 saveProfiles(list)
+                val selected = prefs.getString("selected_profile_id", null)
+                if (selected != null && list.none { it.id == selected }) {
+                    prefs.edit().remove("selected_profile_id").apply()
+                }
             }
             list
         } catch (e: Exception) {
             emptyList()
         }
+    }
+
+    private fun isLegacySample(profile: WgProfile): Boolean {
+        return profile.name == LEGACY_SAMPLE_NAME &&
+            profile.rawConfig.contains(LEGACY_SAMPLE_PRIVATE_KEY)
     }
 
     fun saveProfiles(profiles: List<WgProfile>) {
