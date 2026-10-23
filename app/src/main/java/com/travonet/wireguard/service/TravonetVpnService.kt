@@ -295,11 +295,19 @@ class TravonetVpnService : VpnService() {
             if (TunnelManager.vpnHandle == handle &&
                 TunnelManager.state.value.status == TunnelStatus.CONNECTED
             ) {
-                Log.w(TAG, "No WireGuard handshake after ${HANDSHAKE_TIMEOUT_MS / 1000}s")
-                TunnelManager.updateState(
-                    TunnelStatus.ERROR,
-                    "Handshake не получен за ${HANDSHAKE_TIMEOUT_MS / 1000} с. Смените профиль или стратегию."
-                )
+                Log.w(TAG, "No WireGuard handshake after ${HANDSHAKE_TIMEOUT_MS / 1000}s; tearing down")
+                // Do not leave Android routing all traffic into a dead tunnel.
+                tunnelMutex.withLock {
+                    releaseTunnelLocked()
+                }
+                if (TunnelManager.vpnHandle == -1) {
+                    TunnelManager.updateState(
+                        TunnelStatus.ERROR,
+                        "Handshake не получен за ${HANDSHAKE_TIMEOUT_MS / 1000} с. Смените профиль или стратегию."
+                    )
+                }
+                stopForeground(STOP_FOREGROUND_REMOVE)
+                stopSelf()
             }
         }
     }
