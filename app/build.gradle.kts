@@ -33,8 +33,8 @@ android {
         applicationId = "com.travonet.wireguard"
         minSdk = 28
         targetSdk = 37
-        versionCode = 1
-        versionName = "1.0"
+        versionCode = 1201
+        versionName = "1.2.0-1"
 
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
 
@@ -54,9 +54,12 @@ android {
 
     buildTypes {
         release {
+            // Keep the release build byte-for-byte close to the debug build.
+            // AGP 9's package-scoped optimizer currently breaks Kotlin
+            // collection internals (IllegalAccessError at app startup), so we
+            // ship an unminified but fully functional release APK.
             optimization {
-                enable = true
-                packageScope = setOf("androidx.**", "kotlin.**", "kotlinx.**")
+                enable = false
             }
         }
     }
