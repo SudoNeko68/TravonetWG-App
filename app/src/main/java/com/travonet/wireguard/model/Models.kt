@@ -16,6 +16,17 @@ enum class TunnelStatus {
     ERROR
 }
 
+/**
+ * Откуда брать релей для анонимной регистрации WARP.
+ * AUTO — URL/токен, зашитые в сборку; CUSTOM — введённые пользователем;
+ * NONE — регистрироваться напрямую через api.cloudflareclient.com.
+ */
+enum class WarpRelayMode {
+    AUTO,
+    CUSTOM,
+    NONE
+}
+
 data class TunnelState(
     val status: TunnelStatus = TunnelStatus.DISCONNECTED,
     val message: String = "",

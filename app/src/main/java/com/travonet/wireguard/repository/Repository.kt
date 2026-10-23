@@ -6,6 +6,7 @@ import com.travonet.wireguard.BuildConfig
 import com.travonet.wireguard.model.DefaultStrategies
 import com.travonet.wireguard.model.EvasionStrategy
 import com.travonet.wireguard.model.TunnelMode
+import com.travonet.wireguard.model.WarpRelayMode
 import com.travonet.wireguard.model.WgProfile
 import com.travonet.wireguard.parser.WgConfigParser
 import org.json.JSONArray
@@ -182,18 +183,83 @@ PersistentKeepalive = 25"""
         prefs.edit().putString("socks_listen_addr", addr).apply()
     }
 
-    // WARP registration relay. A value saved by the user wins; otherwise the
-    // build default is used (empty when the build has no relay).
-    fun getWarpRelayUrl(): String {
-        return prefs.getString("warp_relay_url", null) ?: BuildConfig.WARP_RELAY_URL
+    // WARP registration relay. The mode decides whether the build default or
+    // the user's custom URL is used, so the user can switch back and forth
+    // without losing the custom value.
+    fun getWarpRelayMode(): WarpRelayMode {
+        val stored = prefs.getString("warp_relay_mode", null)
+        if (stored != null) {
+            return runCatching { WarpRelayMode.valueOf(stored) }
+                .getOrDefault(WarpRelayMode.NONE)
+        }
+
+        // Migration from builds that only stored a URL. An explicitly empty
+        // URL meant "direct", a non-empty one meant "custom relay".
+        if (prefs.contains("warp_relay_url")) {
+            return if (prefs.getString("warp_relay_url", "").isNullOrBlank()) {
+                WarpRelayMode.NONE
+            } else {
+                WarpRelayMode.CUSTOM
+            }
+        }
+
+        return if (BuildConfig.WARP_RELAY_URL.isNotBlank()) {
+            WarpRelayMode.AUTO
+        } else {
+            WarpRelayMode.NONE
+        }
     }
 
-    fun setWarpRelayUrl(url: String) {
-        prefs.edit().putString("warp_relay_url", url.trim()).apply()
+    fun setWarpRelayMode(mode: WarpRelayMode) {
+        prefs.edit().putString("warp_relay_mode", mode.name).apply()
+    }
+
+    fun getWarpRelayUrl(): String {
+        return when (getWarpRelayMode()) {
+            WarpRelayMode.AUTO -> BuildConfig.WARP_RELAY_URL
+            WarpRelayMode.CUSTOM -> getCustomWarpRelayUrl()
+            WarpRelayMode.NONE -> ""
+        }
     }
 
     fun getWarpRelayToken(): String {
-        return prefs.getString("warp_relay_token", null) ?: BuildConfig.WARP_RELAY_TOKEN
+        return when (getWarpRelayMode()) {
+            WarpRelayMode.AUTO -> BuildConfig.WARP_RELAY_TOKEN
+            WarpRelayMode.CUSTOM -> getCustomWarpRelayToken()
+            WarpRelayMode.NONE -> ""
+        }
+    }
+
+    fun getBuiltInWarpRelayUrl(): String = BuildConfig.WARP_RELAY_URL
+
+    fun getCustomWarpRelayUrl(): String {
+        return prefs.getString("warp_relay_url", "") ?: ""
+    }
+
+    fun getCustomWarpRelayToken(): String {
+        return prefs.getString("warp_relay_token", "") ?: ""
+    }
+
+    /** Saves the selected mode and, for CUSTOM, the URL/token pair. */
+    fun saveWarpRelaySettings(mode: WarpRelayMode, url: String, token: String) {
+        val editor = prefs.edit().putString("warp_relay_mode", mode.name)
+        if (mode == WarpRelayMode.CUSTOM) {
+            editor.putString("warp_relay_url", url.trim())
+            editor.putString("warp_relay_token", token.trim())
+        }
+        editor.apply()
+    }
+
+    // Kept for the quick relay dialog opened from a failed WARP registration.
+    fun setWarpRelayUrl(url: String) {
+        val trimmed = url.trim()
+        prefs.edit()
+            .putString("warp_relay_url", trimmed)
+            .putString(
+                "warp_relay_mode",
+                if (trimmed.isBlank()) WarpRelayMode.NONE.name else WarpRelayMode.CUSTOM.name
+            )
+            .apply()
     }
 
     fun setWarpRelayToken(token: String) {

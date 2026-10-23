@@ -11,7 +11,9 @@ plugins {
 val localProperties = Properties().apply {
     val file = rootProject.file("local.properties")
     if (file.exists()) {
-        file.inputStream().use { load(it) }
+        // Properties.load(InputStream) reads ISO-8859-1, which corrupts
+        // Cyrillic host names. Read the file as UTF-8 instead.
+        file.reader(Charsets.UTF_8).use { load(it) }
     }
 }
 

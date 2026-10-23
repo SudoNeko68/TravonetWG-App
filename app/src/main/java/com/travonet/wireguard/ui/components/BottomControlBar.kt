@@ -53,6 +53,11 @@ fun BottomControlBar(
         Column(
             modifier = Modifier
                 .fillMaxWidth()
+                .windowInsetsPadding(
+                    WindowInsets.safeDrawing.only(
+                        WindowInsetsSides.Horizontal + WindowInsetsSides.Bottom
+                    )
+                )
                 .padding(horizontal = 16.dp, vertical = 12.dp),
             verticalArrangement = Arrangement.spacedBy(10.dp)
         ) {
@@ -69,23 +74,45 @@ fun BottomControlBar(
                         selected = selectedMode == TunnelMode.VPN,
                         onClick = { if (!isRunning && !isBusy) onModeChange(TunnelMode.VPN) },
                         shape = SegmentedButtonDefaults.itemShape(index = 0, count = 2),
-                        enabled = !isRunning && !isBusy
-                    ) {
-                        Icon(Icons.Default.Security, contentDescription = null, modifier = Modifier.size(16.dp))
-                        Spacer(Modifier.width(6.dp))
-                        Text("VPN (TUN)", fontSize = 12.sp)
-                    }
+                        enabled = !isRunning && !isBusy,
+                        icon = {
+                            Icon(
+                                Icons.Default.Security,
+                                contentDescription = null,
+                                modifier = Modifier.size(16.dp)
+                            )
+                        },
+                        label = {
+                            Text(
+                                "VPN (TUN)",
+                                fontSize = 12.sp,
+                                maxLines = 1,
+                                overflow = TextOverflow.Ellipsis
+                            )
+                        }
+                    )
 
                     SegmentedButton(
                         selected = selectedMode == TunnelMode.SOCKS5,
                         onClick = { if (!isRunning && !isBusy) onModeChange(TunnelMode.SOCKS5) },
                         shape = SegmentedButtonDefaults.itemShape(index = 1, count = 2),
-                        enabled = !isRunning && !isBusy
-                    ) {
-                        Icon(Icons.Default.Share, contentDescription = null, modifier = Modifier.size(16.dp))
-                        Spacer(Modifier.width(6.dp))
-                        Text("SOCKS5", fontSize = 12.sp)
-                    }
+                        enabled = !isRunning && !isBusy,
+                        icon = {
+                            Icon(
+                                Icons.Default.Share,
+                                contentDescription = null,
+                                modifier = Modifier.size(16.dp)
+                            )
+                        },
+                        label = {
+                            Text(
+                                "SOCKS5",
+                                fontSize = 12.sp,
+                                maxLines = 1,
+                                overflow = TextOverflow.Ellipsis
+                            )
+                        }
+                    )
                 }
             }
 

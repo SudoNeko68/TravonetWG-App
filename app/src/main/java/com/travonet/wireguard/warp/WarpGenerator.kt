@@ -4,9 +4,12 @@ import android.os.Build
 import android.util.Base64
 import com.travonet.wireguard.model.WgProfile
 import com.travonet.wireguard.parser.WgConfigParser
+import org.json.JSONException
 import org.json.JSONObject
 import org.travonet.backend.GoBackend
 import java.io.IOException
+import java.net.IDN
+import java.net.URL
 import java.util.Locale
 
 /**
@@ -64,7 +67,7 @@ object WarpGenerator {
             publicKey,
             locale,
             model,
-            relayUrl.trim(),
+            normalizeRelayUrl(relayUrl),
             relayToken.trim()
         ) ?: throw IOException("Ядро не вернуло ответ регистрации")
 
@@ -72,8 +75,37 @@ object WarpGenerator {
             throw IOException(humanize(response.removePrefix("ERROR:").trim()))
         }
 
-        val registration = parseRegistrationResponse(response, privateKey, publicKey)
+        val registration = try {
+            parseRegistrationResponse(response, privateKey, publicKey)
+        } catch (e: JSONException) {
+            throw IOException(
+                "Релей вернул не JSON. Проверьте, что на нём развёрнут warp-relay.js.\n\n" +
+                    response.take(160)
+            )
+        }
         return WgConfigParser.parseProfile(name, buildConfig(registration))
+    }
+
+    /**
+     * Go-ядро получает уже ASCII-хост: так URL с кириллическим доменом
+     * (например, larp.футанари.рф) одинаково работает и в DNS, и в TLS SNI.
+     */
+    internal fun normalizeRelayUrl(raw: String): String {
+        val trimmed = raw.trim()
+        if (trimmed.isEmpty()) return ""
+        return try {
+            val url = URL(trimmed)
+            val host = url.host ?: return trimmed
+            val asciiHost = IDN.toASCII(host)
+            if (asciiHost == host) return trimmed
+
+            val userInfo = url.userInfo?.let { "$it@" } ?: ""
+            val port = if (url.port >= 0) ":${url.port}" else ""
+            val fragment = url.ref?.let { "#$it" } ?: ""
+            "${url.protocol}://$userInfo$asciiHost$port${url.file}$fragment"
+        } catch (_: Exception) {
+            trimmed
+        }
     }
 
     /** Уникальное имя, чтобы несколько генераций не сливались в списке. */

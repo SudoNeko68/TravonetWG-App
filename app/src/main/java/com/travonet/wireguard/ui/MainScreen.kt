@@ -14,11 +14,12 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import com.travonet.wireguard.model.EvasionStrategy
 import com.travonet.wireguard.model.TunnelMode
+import com.travonet.wireguard.model.WarpRelayMode
 import com.travonet.wireguard.model.WgProfile
 import com.travonet.wireguard.repository.AppRepository
 import com.travonet.wireguard.service.TunnelManager
 import com.travonet.wireguard.ui.components.BottomControlBar
-import com.travonet.wireguard.ui.dialogs.SocksSettingsDialog
+import com.travonet.wireguard.ui.dialogs.AppSettingsDialog
 import com.travonet.wireguard.ui.dialogs.WarpProgressDialog
 import com.travonet.wireguard.ui.dialogs.WarpRelayDialog
 import com.travonet.wireguard.ui.dialogs.WarpUiState
@@ -49,11 +50,12 @@ fun MainScreen(
     var tunnelMode by remember { mutableStateOf(repository.getTunnelMode()) }
     var socksAddr by remember { mutableStateOf(repository.getSocksListenAddr()) }
 
-    var showSocksSettings by remember { mutableStateOf(false) }
+    var showSettingsDialog by remember { mutableStateOf(false) }
     var showInfoDialog by remember { mutableStateOf(false) }
 
     var warpUiState by remember { mutableStateOf<WarpUiState?>(null) }
     var showWarpRelayDialog by remember { mutableStateOf(false) }
+    var warpRelayMode by remember { mutableStateOf(repository.getWarpRelayMode()) }
     var warpRelayUrl by remember { mutableStateOf(repository.getWarpRelayUrl()) }
     var warpRelayToken by remember { mutableStateOf(repository.getWarpRelayToken()) }
     val scope = rememberCoroutineScope()
@@ -115,8 +117,8 @@ fun MainScreen(
                         }
                     },
                     actions = {
-                        IconButton(onClick = { showSocksSettings = true }) {
-                            Icon(Icons.Default.Settings, contentDescription = "Настройки SOCKS5")
+                        IconButton(onClick = { showSettingsDialog = true }) {
+                            Icon(Icons.Default.Settings, contentDescription = "Настройки")
                         }
                         IconButton(
                             onClick = { generateWarp() },
@@ -235,15 +237,33 @@ fun MainScreen(
         }
     }
 
-    if (showSocksSettings) {
-        SocksSettingsDialog(
-            currentAddr = socksAddr,
-            onDismiss = { showSocksSettings = false },
-            onSave = { newAddr ->
+    if (showSettingsDialog) {
+        AppSettingsDialog(
+            currentSocksAddr = socksAddr,
+            currentRelayMode = warpRelayMode,
+            customRelayUrl = repository.getCustomWarpRelayUrl(),
+            customRelayToken = repository.getCustomWarpRelayToken(),
+            builtInRelayUrl = repository.getBuiltInWarpRelayUrl(),
+            onDismiss = { showSettingsDialog = false },
+            onSave = { newAddr, relayMode, relayUrl, relayToken ->
                 socksAddr = newAddr
                 repository.setSocksListenAddr(newAddr)
-                showSocksSettings = false
-                Toast.makeText(context, "Адрес SOCKS5 обновлен", Toast.LENGTH_SHORT).show()
+                repository.saveWarpRelaySettings(relayMode, relayUrl, relayToken)
+                warpRelayMode = repository.getWarpRelayMode()
+                warpRelayUrl = repository.getWarpRelayUrl()
+                warpRelayToken = repository.getWarpRelayToken()
+                showSettingsDialog = false
+
+                val relaySummary = when (relayMode) {
+                    WarpRelayMode.AUTO -> "встроенный релей"
+                    WarpRelayMode.CUSTOM -> "свой релей"
+                    WarpRelayMode.NONE -> "без релея"
+                }
+                Toast.makeText(
+                    context,
+                    "Настройки сохранены: $relaySummary",
+                    Toast.LENGTH_SHORT
+                ).show()
             }
         )
     }
@@ -303,10 +323,11 @@ fun MainScreen(
             currentUrl = warpRelayUrl,
             currentToken = warpRelayToken,
             onSave = { url, token ->
-                warpRelayUrl = url
-                warpRelayToken = token
                 repository.setWarpRelayUrl(url)
                 repository.setWarpRelayToken(token)
+                warpRelayMode = repository.getWarpRelayMode()
+                warpRelayUrl = repository.getWarpRelayUrl()
+                warpRelayToken = repository.getWarpRelayToken()
                 showWarpRelayDialog = false
                 Toast.makeText(
                     context,
