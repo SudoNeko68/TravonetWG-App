@@ -128,6 +128,20 @@ class TravonetUnitTest {
     }
 
     @Test
+    fun testRecommendedWarpStrategyStartsWithJunk() {
+        val strategy = DefaultStrategies.ALL.first { it.id == "strat_tspu_default" }
+
+        assertTrue(
+            "Рекомендуемая WARP-стратегия должна начинаться с junk: ${strategy.dsl}",
+            strategy.dsl.trimStart().startsWith("junk(")
+        )
+        assertTrue(strategy.dsl.contains("mimic(quic)"))
+        assertTrue(strategy.dsl.contains("mimic(stun)"))
+        assertTrue(strategy.dsl.contains("fake_udp"))
+        assertEquals(0, strategy.preJunk)
+    }
+
+    @Test
     fun testNoEvasionInjectedForCleanStrategy() {
         val profile = WgConfigParser.parseProfile("Clean Server", sampleConfigWithoutStrategy)
         val clean = DefaultStrategies.ALL.first { it.id == "strat_clean_wg" }
