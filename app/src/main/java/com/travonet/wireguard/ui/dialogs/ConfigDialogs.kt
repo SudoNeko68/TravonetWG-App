@@ -9,7 +9,6 @@ import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.ContentPaste
-import androidx.compose.material.icons.filled.DataObject
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
@@ -68,49 +67,23 @@ PersistentKeepalive = 25"""
                     modifier = Modifier.fillMaxWidth()
                 )
 
-                Row(
-                    modifier = Modifier.fillMaxWidth(),
-                    horizontalArrangement = Arrangement.spacedBy(8.dp)
-                ) {
-                    OutlinedButton(
-                        onClick = {
-                            val cm = context.getSystemService(Context.CLIPBOARD_SERVICE) as ClipboardManager
-                            val clip = cm.primaryClip
-                            if (clip != null && clip.itemCount > 0) {
-                                val pasteText = clip.getItemAt(0).text?.toString() ?: ""
-                                if (pasteText.isNotBlank()) {
-                                    rawConfig = pasteText
-                                    Toast.makeText(context, "Вставлено из буфера", Toast.LENGTH_SHORT).show()
-                                }
+                OutlinedButton(
+                    onClick = {
+                        val cm = context.getSystemService(Context.CLIPBOARD_SERVICE) as ClipboardManager
+                        val clip = cm.primaryClip
+                        if (clip != null && clip.itemCount > 0) {
+                            val pasteText = clip.getItemAt(0).text?.toString() ?: ""
+                            if (pasteText.isNotBlank()) {
+                                rawConfig = pasteText
+                                Toast.makeText(context, "Вставлено из буфера", Toast.LENGTH_SHORT).show()
                             }
-                        },
-                        modifier = Modifier.weight(1f)
-                    ) {
-                        Icon(Icons.Default.ContentPaste, contentDescription = null, modifier = Modifier.size(16.dp))
-                        Spacer(Modifier.width(6.dp))
-                        Text("Вставить", fontSize = 12.sp)
-                    }
-
-                    OutlinedButton(
-                        onClick = {
-                            rawConfig = """[Interface]
-PrivateKey = OCugIHnrk/r8Zdtd5AGYIchdMag+dqXF08yn1AZ2aUw=
-Address = 172.16.0.2/32
-DNS = 1.1.1.1, 8.8.8.8
-MTU = 1280
-
-[Peer]
-PublicKey = bmXOC+F1FxEMF9dyiK2H5/1SUtzH0JuVo51h2wPfgyo=
-Endpoint = 162.159.192.1:2408
-AllowedIPs = 0.0.0.0/0
-PersistentKeepalive = 25"""
-                        },
-                        modifier = Modifier.weight(1f)
-                    ) {
-                        Icon(Icons.Default.DataObject, contentDescription = null, modifier = Modifier.size(16.dp))
-                        Spacer(Modifier.width(6.dp))
-                        Text("Шаблон", fontSize = 12.sp)
-                    }
+                        }
+                    },
+                    modifier = Modifier.fillMaxWidth()
+                ) {
+                    Icon(Icons.Default.ContentPaste, contentDescription = null, modifier = Modifier.size(16.dp))
+                    Spacer(Modifier.width(6.dp))
+                    Text("Вставить", fontSize = 12.sp)
                 }
 
                 OutlinedTextField(

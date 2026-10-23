@@ -18,12 +18,6 @@ class AppRepository(context: Context) {
     companion object {
         // Пресеты живут в отдельном объекте, чтобы их можно было проверить unit-тестами.
         val DEFAULT_STRATEGIES = DefaultStrategies.ALL
-
-        // Раньше приложение при первом запуске создавало этот демо-профиль.
-        // Оставляем идентификатор, чтобы удалить его у тех, кто уже обновился.
-        private const val LEGACY_SAMPLE_NAME = "Демо-сервер WireGuard (Пример)"
-        private const val LEGACY_SAMPLE_PRIVATE_KEY =
-            "OCugIHnrk/r8Zdtd5AGYIchdMag+dqXF08yn1AZ2aUw="
     }
 
     // Profiles
@@ -35,31 +29,13 @@ class AppRepository(context: Context) {
         return try {
             val array = JSONArray(raw)
             val list = mutableListOf<WgProfile>()
-            var needsResave = false
             for (i in 0 until array.length()) {
-                val p = WgProfile.fromJson(array.getJSONObject(i))
-                if (isLegacySample(p) || p.rawConfig.contains("aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa")) {
-                    needsResave = true
-                    continue
-                }
-                list.add(p)
-            }
-            if (needsResave) {
-                saveProfiles(list)
-                val selected = prefs.getString("selected_profile_id", null)
-                if (selected != null && list.none { it.id == selected }) {
-                    prefs.edit().remove("selected_profile_id").apply()
-                }
+                list.add(WgProfile.fromJson(array.getJSONObject(i)))
             }
             list
         } catch (e: Exception) {
             emptyList()
         }
-    }
-
-    private fun isLegacySample(profile: WgProfile): Boolean {
-        return profile.name == LEGACY_SAMPLE_NAME &&
-            profile.rawConfig.contains(LEGACY_SAMPLE_PRIVATE_KEY)
     }
 
     fun saveProfiles(profiles: List<WgProfile>) {

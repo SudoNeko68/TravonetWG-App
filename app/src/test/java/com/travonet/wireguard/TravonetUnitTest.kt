@@ -128,7 +128,7 @@ class TravonetUnitTest {
     }
 
     @Test
-    fun testRecommendedWarpStrategyStartsWithJunk() {
+    fun testRecommendedStrategyStartsWithJunk() {
         val strategy = DefaultStrategies.ALL.first { it.id == "strat_tspu_default" }
 
         assertTrue(
