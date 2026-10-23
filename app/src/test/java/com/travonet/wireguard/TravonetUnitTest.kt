@@ -4,6 +4,7 @@ import com.travonet.wireguard.model.DefaultStrategies
 import com.travonet.wireguard.model.EvasionStrategy
 import com.travonet.wireguard.parser.WgConfigParser
 import com.travonet.wireguard.service.TunnelManager
+import com.travonet.wireguard.warp.WarpGenerator
 import org.junit.Assert.*
 import org.junit.Test
 
@@ -187,5 +188,25 @@ class TravonetUnitTest {
 
         val prepared = WgConfigParser.prepareConfigForLaunch(profile, strategy)
         assertTrue(prepared.contains("Strategy = ${strategy.dsl}"))
+    }
+
+    @Test
+    fun testWarpProfileDoesNotEmitReserved() {
+        val registration = WarpGenerator.Registration(
+            privateKey = "private",
+            publicKey = "public",
+            ipv4 = "172.16.0.2",
+            ipv6 = "2606:4700:110::1",
+            peerPublicKey = "peer",
+            endpoint = "162.159.192.6:2408"
+        )
+
+        val config = WarpGenerator.buildConfig(registration)
+
+        assertFalse(
+            "Свежий WARP-профиль не должен содержать Reserved: Cloudflare не отвечает на такой handshake",
+            config.contains("Reserved", ignoreCase = true)
+        )
+        assertTrue(config.contains("Endpoint = 162.159.192.6:2408"))
     }
 }

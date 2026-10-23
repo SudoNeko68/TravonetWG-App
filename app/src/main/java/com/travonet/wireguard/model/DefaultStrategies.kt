@@ -30,7 +30,7 @@ object DefaultStrategies {
         EvasionStrategy(
             id = "strat_tspu_default",
             name = "Мобильная сеть / Wi-Fi (Рекомендуемая)",
-            description = "Безопасный для LTE/5G конвейер: QUIC + STUN, junk 64 байта, повреждённый fake-handshake и пауза 15 мс. Без фрагментов и IP Options, поэтому пакеты не теряются в сотовой сети.",
+            description = "Безопасный для LTE/5G конвейер: pre-junk 64 байта, затем QUIC + STUN, junk 64 байта, повреждённый fake-handshake и пауза 15 мс. Pre-junk перед QUIC обязателен для WARP: без него Cloudflare не отвечает на handshake. Без фрагментов и IP Options, поэтому пакеты не теряются в сотовой сети.",
             dsl = "mimic(quic) -> mimic(stun) -> junk(size=64) -> fake_udp(size=148, corrupt=true) -> sleep(15ms)",
             fakeTtl = "auto",
             preJunk = 64,

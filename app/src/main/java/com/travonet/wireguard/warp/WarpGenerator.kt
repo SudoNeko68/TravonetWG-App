@@ -1,7 +1,6 @@
 package com.travonet.wireguard.warp
 
 import android.os.Build
-import android.util.Base64
 import com.travonet.wireguard.model.WgProfile
 import com.travonet.wireguard.parser.WgConfigParser
 import org.json.JSONException
@@ -32,8 +31,7 @@ object WarpGenerator {
         val ipv4: String,
         val ipv6: String,
         val peerPublicKey: String,
-        val endpoint: String,
-        val reserved: String?
+        val endpoint: String
     )
 
     /**
@@ -158,8 +156,7 @@ object WarpGenerator {
             ipv4 = ipv4,
             ipv6 = ipv6,
             peerPublicKey = peerPublicKey,
-            endpoint = endpoint,
-            reserved = decodeReserved(config.optString("client_id"))
+            endpoint = endpoint
         )
     }
 
@@ -174,9 +171,10 @@ object WarpGenerator {
             appendLine("Address = $addresses")
             appendLine("DNS = 1.1.1.1, 1.0.0.1, 2606:4700:4700::1111, 2606:4700:4700::1001")
             appendLine("MTU = 1280")
-            registration.reserved?.takeIf { it.isNotBlank() }?.let {
-                appendLine("Reserved = $it")
-            }
+            // Cloudflare's WireGuard endpoints reject a non-zero reserved
+            // header for current anonymous registrations: the handshake gets
+            // no response. The core still parses Reserved for imported WARP
+            // profiles, but freshly generated profiles must leave it zero.
             appendLine()
             appendLine("[Peer]")
             appendLine("PublicKey = ${registration.peerPublicKey}")
@@ -220,21 +218,6 @@ object WarpGenerator {
             }
         }
         return "$value:2408"
-    }
-
-    /** Первые три байта client_id — reserved для WARP-профилей. */
-    private fun decodeReserved(clientId: String): String? {
-        if (clientId.isBlank()) return null
-        return try {
-            val bytes = Base64.decode(clientId, Base64.DEFAULT)
-            if (bytes.size >= 3) {
-                "${bytes[0].toInt() and 0xFF},${bytes[1].toInt() and 0xFF},${bytes[2].toInt() and 0xFF}"
-            } else {
-                null
-            }
-        } catch (_: Exception) {
-            null
-        }
     }
 
     private fun humanize(message: String): String = when {
