@@ -82,12 +82,14 @@ class MainActivity : ComponentActivity() {
         super.onCreate(savedInstanceState)
         enableEdgeToEdge()
 
-        checkNotificationPermission()
-
         setContent {
             TravonetWGTheme {
                 MainScreen(
                     onRequestStartTunnel = { profile, strategy, mode ->
+                        // Ask for notification permission only when the user
+                        // actually starts a foreground tunnel, not on every
+                        // cold app start.
+                        checkNotificationPermission()
                         withLocalNetworkPermission {
                             when (mode) {
                                 TunnelMode.VPN -> {

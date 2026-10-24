@@ -29,20 +29,8 @@ fun AddEditProfileDialog(
 ) {
     val context = LocalContext.current
     var name by remember { mutableStateOf(profile?.name ?: "Новая конфигурация") }
-    var rawConfig by remember {
-        mutableStateOf(
-            profile?.rawConfig ?: """[Interface]
-PrivateKey = 
-Address = 172.16.0.2/32
-DNS = 1.1.1.1, 8.8.8.8
-MTU = 1280
-
-[Peer]
-PublicKey = 
-Endpoint = 127.0.0.1:51820
-AllowedIPs = 0.0.0.0/0
-PersistentKeepalive = 25"""
-        )
+    var rawConfig by remember(profile?.id) {
+        mutableStateOf(profile?.rawConfig ?: "")
     }
 
     var errorMessage by remember { mutableStateOf<String?>(null) }

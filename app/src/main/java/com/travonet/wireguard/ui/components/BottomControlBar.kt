@@ -12,6 +12,8 @@ import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.*
 import androidx.compose.material3.*
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.collectAsState
+import androidx.compose.runtime.getValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
@@ -23,14 +25,11 @@ import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import com.travonet.wireguard.model.TunnelMode
-import com.travonet.wireguard.model.TunnelState
-import com.travonet.wireguard.model.TunnelStats
 import com.travonet.wireguard.model.TunnelStatus
+import com.travonet.wireguard.service.TunnelManager
 
 @Composable
 fun BottomControlBar(
-    tunnelState: TunnelState,
-    tunnelStats: TunnelStats,
     selectedMode: TunnelMode,
     socksAddr: String,
     onModeChange: (TunnelMode) -> Unit,
@@ -39,6 +38,10 @@ fun BottomControlBar(
     modifier: Modifier = Modifier
 ) {
     val context = LocalContext.current
+    // Keep high-frequency tunnel stats inside a tiny child composable so the
+    // profile/strategy lists and the rest of this bar are not recomposed every
+    // second.
+    val tunnelState by TunnelManager.state.collectAsState()
     val isRunning = tunnelState.status == TunnelStatus.CONNECTED
     val isBusy = tunnelState.status == TunnelStatus.CONNECTING || tunnelState.status == TunnelStatus.STOPPING
 
@@ -164,11 +167,7 @@ fun BottomControlBar(
 
                         if (isRunning) {
                             if (tunnelState.mode == TunnelMode.VPN) {
-                                Text(
-                                    text = "↑ ${tunnelStats.formattedTx()}  •  ↓ ${tunnelStats.formattedRx()}",
-                                    style = MaterialTheme.typography.bodySmall,
-                                    color = MaterialTheme.colorScheme.onSurfaceVariant
-                                )
+                                TunnelStatsLine()
                             } else {
                                 Row(verticalAlignment = Alignment.CenterVertically) {
                                     Text(
@@ -251,4 +250,14 @@ fun BottomControlBar(
             }
         }
     }
+}
+
+@Composable
+private fun TunnelStatsLine() {
+    val stats by TunnelManager.stats.collectAsState()
+    Text(
+        text = "↑ ${stats.formattedTx()}  •  ↓ ${stats.formattedRx()}",
+        style = MaterialTheme.typography.bodySmall,
+        color = MaterialTheme.colorScheme.onSurfaceVariant
+    )
 }

@@ -60,9 +60,6 @@ fun MainScreen(
     var warpRelayToken by remember { mutableStateOf(repository.getWarpRelayToken()) }
     val scope = rememberCoroutineScope()
 
-    val tunnelState by TunnelManager.state.collectAsState()
-    val tunnelStats by TunnelManager.stats.collectAsState()
-
     val activeFallbackStrategy = remember(strategies, selectedStrategyId) {
         strategies.firstOrNull { it.id == selectedStrategyId } ?: strategies.first()
     }
@@ -168,8 +165,6 @@ fun MainScreen(
         },
         bottomBar = {
             BottomControlBar(
-                tunnelState = tunnelState,
-                tunnelStats = tunnelStats,
                 selectedMode = tunnelMode,
                 socksAddr = socksAddr,
                 onModeChange = { newMode ->
