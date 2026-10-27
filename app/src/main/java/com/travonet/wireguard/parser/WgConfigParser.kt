@@ -228,4 +228,63 @@ object WgConfigParser {
         // Без секции [Interface] это не .conf-файл: оставляем как есть.
         return if (injected) sb.toString() else rawConfig
     }
+
+    /**
+     * Преобразует доменные имена в Endpoint директивах пиров в IPv4-адреса.
+     *
+     * Как только Android VpnService выполняет establish(), весь системный DNS
+     * направляется в TUN-интерфейс, который ещё не подключен. Если эндпоинт
+     * задан доменом, Go-ядро не может его разрешить. Кроме того, userspace-обход
+     * DPI в ядре работает только для IPv4; выбор IPv6 на сотовой сети отключает
+     * обход.
+     */
+    fun resolveConfigEndpoints(rawConfig: String): String {
+        val lines = rawConfig.lines()
+        val sb = StringBuilder()
+        for (line in lines) {
+            val trimmed = line.trim()
+            if (!trimmed.startsWith("#") && !trimmed.startsWith(";") && trimmed.contains("=")) {
+                val parts = trimmed.split("=", limit = 2)
+                if (parts[0].trim().equals("endpoint", ignoreCase = true)) {
+                    val originalEndpoint = parts[1].substringBefore('#').substringBefore(';').trim()
+                    val resolved = resolveEndpointToIpv4(originalEndpoint)
+                    if (resolved != originalEndpoint) {
+                        sb.appendLine("${parts[0].trim()} = $resolved")
+                        continue
+                    }
+                }
+            }
+            sb.appendLine(line)
+        }
+        return sb.toString().trimEnd() + "\n"
+    }
+
+    fun resolveEndpointToIpv4(endpoint: String): String {
+        if (endpoint.isBlank()) return endpoint
+        val lastColon = endpoint.lastIndexOf(':')
+        if (lastColon <= 0) return endpoint
+        val host = endpoint.substring(0, lastColon).removePrefix("[").removeSuffix("]").trim()
+        val port = endpoint.substring(lastColon + 1).trim()
+
+        val ipv4Parts = host.split('.')
+        if (ipv4Parts.size == 4 && ipv4Parts.all { it.toIntOrNull() in 0..255 }) {
+            return endpoint
+        }
+
+        if (host.contains(':')) {
+            return endpoint
+        }
+
+        return try {
+            val addrs = java.net.InetAddress.getAllByName(host)
+            val ipv4 = addrs.firstOrNull { it is java.net.Inet4Address }
+            if (ipv4 != null) {
+                "${ipv4.hostAddress}:$port"
+            } else {
+                endpoint
+            }
+        } catch (_: Exception) {
+            endpoint
+        }
+    }
 }

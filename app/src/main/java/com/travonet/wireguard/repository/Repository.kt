@@ -18,27 +18,60 @@ class AppRepository(context: Context) {
     companion object {
         // Пресеты живут в отдельном объекте, чтобы их можно было проверить unit-тестами.
         val DEFAULT_STRATEGIES = DefaultStrategies.ALL
+        const val DEFAULT_BUILTIN_WARP_RELAY_URL = "https://larp.футанари.рф/register"
+        const val DEFAULT_BUILTIN_WARP_RELAY_TOKEN = "e11ced0fba59e86a5c0c385d5ab53de072e5c5d7bc7157aea832188a790dd678"
+    }
+
+    @Volatile private var cachedProfiles: List<WgProfile>? = null
+    @Volatile private var cachedStrategies: List<EvasionStrategy>? = null
+
+    private fun isLegacyDemoProfile(profile: WgProfile): Boolean {
+        val nameLower = profile.name.lowercase()
+        return nameLower.contains("демо") ||
+            nameLower.contains("demo") ||
+            nameLower.contains("пример") ||
+            profile.rawConfig.contains("OCugIHnrk/r8Zdtd5AGYIchdMag+dqXF08yn1AZ2aUw=")
     }
 
     // Profiles
     fun getProfiles(): List<WgProfile> {
+        cachedProfiles?.let { return it }
         val raw = prefs.getString("wg_profiles", null)
         if (raw.isNullOrBlank()) {
+            cachedProfiles = emptyList()
             return emptyList()
         }
         return try {
             val array = JSONArray(raw)
             val list = mutableListOf<WgProfile>()
+            var cleanedDemo = false
             for (i in 0 until array.length()) {
-                list.add(WgProfile.fromJson(array.getJSONObject(i)))
+                val p = WgProfile.fromJson(array.getJSONObject(i))
+                if (isLegacyDemoProfile(p)) {
+                    cleanedDemo = true
+                    continue
+                }
+                list.add(p)
             }
+            if (cleanedDemo) {
+                val newArray = JSONArray()
+                list.forEach { newArray.put(it.toJson()) }
+                prefs.edit().putString("wg_profiles", newArray.toString()).apply()
+                val selectedId = prefs.getString("selected_profile_id", null)
+                if (selectedId != null && list.none { it.id == selectedId }) {
+                    prefs.edit().putString("selected_profile_id", list.firstOrNull()?.id).apply()
+                }
+            }
+            cachedProfiles = list
             list
         } catch (e: Exception) {
+            cachedProfiles = emptyList()
             emptyList()
         }
     }
 
     fun saveProfiles(profiles: List<WgProfile>) {
+        cachedProfiles = profiles
         val array = JSONArray()
         profiles.forEach { array.put(it.toJson()) }
         prefs.edit().putString("wg_profiles", array.toString()).apply()
@@ -81,6 +114,7 @@ class AppRepository(context: Context) {
 
     // Strategies
     fun getStrategies(): List<EvasionStrategy> {
+        cachedStrategies?.let { return it }
         val raw = prefs.getString("custom_strategies", null)
         val customList = mutableListOf<EvasionStrategy>()
         if (!raw.isNullOrBlank()) {
@@ -93,10 +127,13 @@ class AppRepository(context: Context) {
                 // ignore
             }
         }
-        return DEFAULT_STRATEGIES + customList
+        val all = DEFAULT_STRATEGIES + customList
+        cachedStrategies = all
+        return all
     }
 
     fun addOrUpdateCustomStrategy(strategy: EvasionStrategy) {
+        cachedStrategies = null
         val customOnly = getStrategies().filter { it.isCustom }.toMutableList()
         val index = customOnly.indexOfFirst { it.id == strategy.id }
         if (index >= 0) {
@@ -107,9 +144,11 @@ class AppRepository(context: Context) {
         val array = JSONArray()
         customOnly.forEach { array.put(it.toJson()) }
         prefs.edit().putString("custom_strategies", array.toString()).apply()
+        cachedStrategies = DEFAULT_STRATEGIES + customOnly
     }
 
     fun deleteCustomStrategy(id: String) {
+        cachedStrategies = null
         val customOnly = getStrategies().filter { it.isCustom && it.id != id }
         val array = JSONArray()
         customOnly.forEach { array.put(it.toJson()) }
@@ -117,6 +156,7 @@ class AppRepository(context: Context) {
         if (getSelectedStrategyId() == id) {
             setSelectedStrategyId("strat_tspu_default")
         }
+        cachedStrategies = DEFAULT_STRATEGIES + customOnly
     }
 
     fun getSelectedStrategyId(): String {
@@ -175,7 +215,7 @@ class AppRepository(context: Context) {
             }
         }
 
-        return if (BuildConfig.WARP_RELAY_URL.isNotBlank()) {
+        return if (getBuiltInWarpRelayUrl().isNotBlank()) {
             WarpRelayMode.AUTO
         } else {
             WarpRelayMode.NONE
@@ -188,7 +228,7 @@ class AppRepository(context: Context) {
 
     fun getWarpRelayUrl(): String {
         return when (getWarpRelayMode()) {
-            WarpRelayMode.AUTO -> BuildConfig.WARP_RELAY_URL
+            WarpRelayMode.AUTO -> getBuiltInWarpRelayUrl()
             WarpRelayMode.CUSTOM -> getCustomWarpRelayUrl()
             WarpRelayMode.NONE -> ""
         }
@@ -196,13 +236,17 @@ class AppRepository(context: Context) {
 
     fun getWarpRelayToken(): String {
         return when (getWarpRelayMode()) {
-            WarpRelayMode.AUTO -> BuildConfig.WARP_RELAY_TOKEN
+            WarpRelayMode.AUTO -> getBuiltInWarpRelayToken()
             WarpRelayMode.CUSTOM -> getCustomWarpRelayToken()
             WarpRelayMode.NONE -> ""
         }
     }
 
-    fun getBuiltInWarpRelayUrl(): String = BuildConfig.WARP_RELAY_URL
+    fun getBuiltInWarpRelayUrl(): String =
+        BuildConfig.WARP_RELAY_URL.ifBlank { DEFAULT_BUILTIN_WARP_RELAY_URL }
+
+    fun getBuiltInWarpRelayToken(): String =
+        BuildConfig.WARP_RELAY_TOKEN.ifBlank { DEFAULT_BUILTIN_WARP_RELAY_TOKEN }
 
     fun getCustomWarpRelayUrl(): String {
         return prefs.getString("warp_relay_url", "") ?: ""
@@ -236,5 +280,38 @@ class AppRepository(context: Context) {
 
     fun setWarpRelayToken(token: String) {
         prefs.edit().putString("warp_relay_token", token.trim()).apply()
+    }
+
+    // Reliability & Background Execution Settings
+    fun isForegroundServiceEnabled(): Boolean {
+        return prefs.getBoolean("foreground_service_enabled", true)
+    }
+
+    fun setForegroundServiceEnabled(enabled: Boolean) {
+        prefs.edit().putBoolean("foreground_service_enabled", enabled).apply()
+    }
+
+    fun isWakeLockEnabled(): Boolean {
+        return prefs.getBoolean("wakelock_enabled", false)
+    }
+
+    fun setWakeLockEnabled(enabled: Boolean) {
+        prefs.edit().putBoolean("wakelock_enabled", enabled).apply()
+    }
+
+    fun isAutoReconnectEnabled(): Boolean {
+        return prefs.getBoolean("auto_reconnect_enabled", true)
+    }
+
+    fun setAutoReconnectEnabled(enabled: Boolean) {
+        prefs.edit().putBoolean("auto_reconnect_enabled", enabled).apply()
+    }
+
+    fun isShowAddressesEnabled(): Boolean {
+        return prefs.getBoolean("show_addresses_enabled", false)
+    }
+
+    fun setShowAddressesEnabled(enabled: Boolean) {
+        prefs.edit().putBoolean("show_addresses_enabled", enabled).apply()
     }
 }

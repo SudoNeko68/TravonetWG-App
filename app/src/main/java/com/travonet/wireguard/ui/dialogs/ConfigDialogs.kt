@@ -8,6 +8,7 @@ import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.filled.Cloud
 import androidx.compose.material.icons.filled.ContentPaste
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
@@ -24,6 +25,7 @@ import com.travonet.wireguard.parser.WgConfigParser
 @Composable
 fun AddEditProfileDialog(
     profile: WgProfile? = null,
+    onGenerateWarp: (() -> Unit)? = null,
     onDismiss: () -> Unit,
     onSave: (WgProfile) -> Unit
 ) {
@@ -55,23 +57,42 @@ fun AddEditProfileDialog(
                     modifier = Modifier.fillMaxWidth()
                 )
 
-                OutlinedButton(
-                    onClick = {
-                        val cm = context.getSystemService(Context.CLIPBOARD_SERVICE) as ClipboardManager
-                        val clip = cm.primaryClip
-                        if (clip != null && clip.itemCount > 0) {
-                            val pasteText = clip.getItemAt(0).text?.toString() ?: ""
-                            if (pasteText.isNotBlank()) {
-                                rawConfig = pasteText
-                                Toast.makeText(context, "Вставлено из буфера", Toast.LENGTH_SHORT).show()
-                            }
-                        }
-                    },
-                    modifier = Modifier.fillMaxWidth()
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    horizontalArrangement = Arrangement.spacedBy(8.dp)
                 ) {
-                    Icon(Icons.Default.ContentPaste, contentDescription = null, modifier = Modifier.size(16.dp))
-                    Spacer(Modifier.width(6.dp))
-                    Text("Вставить", fontSize = 12.sp)
+                    OutlinedButton(
+                        onClick = {
+                            val cm = context.getSystemService(Context.CLIPBOARD_SERVICE) as ClipboardManager
+                            val clip = cm.primaryClip
+                            if (clip != null && clip.itemCount > 0) {
+                                val pasteText = clip.getItemAt(0).text?.toString() ?: ""
+                                if (pasteText.isNotBlank()) {
+                                    rawConfig = pasteText
+                                    Toast.makeText(context, "Вставлено из буфера", Toast.LENGTH_SHORT).show()
+                                }
+                            }
+                        },
+                        modifier = Modifier.weight(1f)
+                    ) {
+                        Icon(Icons.Default.ContentPaste, contentDescription = null, modifier = Modifier.size(16.dp))
+                        Spacer(Modifier.width(6.dp))
+                        Text("Из буфера", fontSize = 12.sp)
+                    }
+
+                    if (profile == null && onGenerateWarp != null) {
+                        FilledTonalButton(
+                            onClick = {
+                                onDismiss()
+                                onGenerateWarp()
+                            },
+                            modifier = Modifier.weight(1f)
+                        ) {
+                            Icon(Icons.Default.Cloud, contentDescription = null, modifier = Modifier.size(16.dp))
+                            Spacer(Modifier.width(6.dp))
+                            Text("WARP", fontSize = 12.sp)
+                        }
+                    }
                 }
 
                 OutlinedTextField(

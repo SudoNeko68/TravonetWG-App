@@ -82,6 +82,13 @@ class MainActivity : ComponentActivity() {
         super.onCreate(savedInstanceState)
         enableEdgeToEdge()
 
+        // Background warmup of native JNI library to avoid blocking UI rendering
+        Thread {
+            try {
+                Class.forName("org.travonet.backend.GoBackend")
+            } catch (_: Throwable) {}
+        }.start()
+
         setContent {
             TravonetWGTheme {
                 MainScreen(

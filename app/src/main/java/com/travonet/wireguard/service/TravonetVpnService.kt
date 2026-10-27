@@ -7,9 +7,14 @@ import android.app.PendingIntent
 import android.content.Context
 import android.content.Intent
 import android.content.pm.ServiceInfo
+import android.net.ConnectivityManager
+import android.net.Network
+import android.net.NetworkCapabilities
 import android.net.VpnService
 import android.os.Build
 import android.os.ParcelFileDescriptor
+import android.os.PowerManager
+import android.system.OsConstants
 import android.util.Log
 import androidx.core.app.NotificationCompat
 import com.travonet.wireguard.MainActivity
@@ -37,12 +42,16 @@ class TravonetVpnService : VpnService() {
     private var statsJob: Job? = null
     private var healthJob: Job? = null
 
+    private var connectivityManager: ConnectivityManager? = null
+    private var defaultNetworkCallback: ConnectivityManager.NetworkCallback? = null
+
     // The tunnel owned by *this* service instance. TunnelManager.vpnHandle is
     // shared with the UI and can already point at a newer instance; releasing
     // by the shared value would tear down a freshly started tunnel.
     private var activeHandle: Int = -1
     private var activePfd: ParcelFileDescriptor? = null
     @Volatile private var destroyed = false
+    private var wakeLock: PowerManager.WakeLock? = null
 
     companion object {
         const val TAG = "TravonetVPN"
@@ -51,7 +60,7 @@ class TravonetVpnService : VpnService() {
         const val EXTRA_PROFILE_ID = "profile_id"
         private const val NOTIFICATION_ID = 1001
         private const val CHANNEL_ID = "travonet_vpn_channel"
-        private const val HANDSHAKE_TIMEOUT_MS = 15_000L
+        private const val HANDSHAKE_TIMEOUT_MS = 45_000L
     }
 
     override fun onCreate() {
@@ -104,10 +113,16 @@ class TravonetVpnService : VpnService() {
 
             val parsed = WgConfigParser.parse(profile.rawConfig)
             val preparedConfig = WgConfigParser.prepareConfigForLaunch(profile, strategy)
+            val resolvedConfig = WgConfigParser.resolveConfigEndpoints(preparedConfig)
 
             val builder = Builder()
                 .setSession("TravonetWG - ${profile.name}")
                 .setMtu(parsed.iface.mtu)
+                .setBlocking(true)
+
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
+                builder.setMetered(false)
+            }
 
             // Add Addresses
             var hasIpv4 = false
@@ -160,6 +175,11 @@ class TravonetVpnService : VpnService() {
                 if (hasIpv6) builder.addRoute("::", 0)
             }
 
+            builder.allowFamily(OsConstants.AF_INET)
+            if (!hasIpv6) {
+                builder.allowFamily(OsConstants.AF_INET6)
+            }
+
             // Add DNS
             var dnsCount = 0
             parsed.iface.dnsServers.forEach { dnsStr ->
@@ -190,12 +210,17 @@ class TravonetVpnService : VpnService() {
             activePfd = currentPfd
             val tunFd = currentPfd.detachFd()
 
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.P) {
+                setUnderlyingNetworks(null)
+            }
+            registerNetworkCallback()
+
             // wgTurnOnProtected применяет VpnService.protect(fd) к каждому
             // UDP-сокету ещё до bind(), поэтому handshake не может уйти в tun
             // и зациклиться. Легаси-путь (wgTurnOn + protect после старта)
             // здесь не нужен.
             val handle = GoBackend.wgTurnOnProtected(
-                "wg0", tunFd, preparedConfig, this@TravonetVpnService
+                "wg0", tunFd, resolvedConfig, this@TravonetVpnService
             )
 
             // The start may have been superseded by a newer ACTION_START (or
@@ -234,9 +259,20 @@ class TravonetVpnService : VpnService() {
                 strategyName = activeStrategyDesc
             )
 
-            startForegroundServiceNotification(profile.name, activeStrategyDesc, "Подключено")
+            val repository = AppRepository(this@TravonetVpnService)
+            if (repository.isWakeLockEnabled()) {
+                acquireWakeLock()
+            } else {
+                releaseWakeLock()
+            }
+
+            if (repository.isForegroundServiceEnabled()) {
+                startForegroundServiceNotification(profile.name, activeStrategyDesc, "Подключено")
+            } else {
+                stopForeground(STOP_FOREGROUND_REMOVE)
+            }
             startStatsPolling(handle, profile.name, activeStrategyDesc)
-            startHandshakeWatchdog(handle)
+            startHandshakeWatchdog(handle, profile, strategy)
 
         } catch (e: Throwable) {
             Log.e(TAG, "Fatal error in startTunnel", e)
@@ -255,15 +291,18 @@ class TravonetVpnService : VpnService() {
                     val stats = TunnelManager.parseUapiStats(configDump)
                     TunnelManager.updateStats(stats)
 
-                    val nm = getSystemService(Context.NOTIFICATION_SERVICE) as NotificationManager
-                    nm.notify(
-                        NOTIFICATION_ID,
-                        buildNotification(
-                            profileName,
-                            strategyDesc,
-                            "↑ ${stats.formattedTx()}  ↓ ${stats.formattedRx()}"
+                    val repository = AppRepository(this@TravonetVpnService)
+                    if (repository.isForegroundServiceEnabled()) {
+                        val nm = getSystemService(Context.NOTIFICATION_SERVICE) as NotificationManager
+                        nm.notify(
+                            NOTIFICATION_ID,
+                            buildNotification(
+                                profileName,
+                                strategyDesc,
+                                "↑ ${stats.formattedTx()}  ↓ ${stats.formattedRx()}"
+                            )
                         )
-                    )
+                    }
                 } catch (e: Exception) {
                     Log.w(TAG, "Error fetching wgGetConfig", e)
                 }
@@ -272,14 +311,17 @@ class TravonetVpnService : VpnService() {
     }
 
     /**
-     * The UI used to show "VPN активен" immediately after wgTurnOn, even if
-     * the handshake never completed. Surface that state instead of pretending
-     * the tunnel works, and let the user retry another profile/strategy.
+     * Watches for the initial WireGuard handshake, or reconnects if connection is lost.
      */
-    private fun startHandshakeWatchdog(handle: Int) {
+    private fun startHandshakeWatchdog(
+        handle: Int,
+        profile: com.travonet.wireguard.model.WgProfile,
+        strategy: com.travonet.wireguard.model.EvasionStrategy
+    ) {
         healthJob?.cancel()
         healthJob = serviceScope.launch {
             val deadline = System.currentTimeMillis() + HANDSHAKE_TIMEOUT_MS
+            var initialHandshakeReceived = false
             while (isActive && System.currentTimeMillis() < deadline) {
                 delay(1000)
                 if (TunnelManager.vpnHandle != handle) return@launch
@@ -289,25 +331,80 @@ class TravonetVpnService : VpnService() {
                     null
                 }
                 if (TunnelManager.parseUapiStats(configDump).lastHandshakeSec > 0L) {
-                    return@launch
+                    initialHandshakeReceived = true
+                    break
                 }
             }
-            if (TunnelManager.vpnHandle == handle &&
-                TunnelManager.state.value.status == TunnelStatus.CONNECTED
-            ) {
-                Log.w(TAG, "No WireGuard handshake after ${HANDSHAKE_TIMEOUT_MS / 1000}s; tearing down")
-                // Do not leave Android routing all traffic into a dead tunnel.
-                tunnelMutex.withLock {
-                    releaseTunnelLocked()
+
+            val repository = AppRepository(this@TravonetVpnService)
+            if (!initialHandshakeReceived) {
+                if (TunnelManager.vpnHandle == handle &&
+                    TunnelManager.state.value.status == TunnelStatus.CONNECTED
+                ) {
+                    if (repository.isAutoReconnectEnabled()) {
+                        Log.w(TAG, "No WireGuard handshake; auto-reconnecting...")
+                        TunnelManager.updateState(TunnelStatus.CONNECTING, "Переподключение...")
+                        tunnelMutex.withLock {
+                            releaseTunnelLocked()
+                        }
+                        delay(2000)
+                        if (isActive && !destroyed) {
+                            tunnelMutex.withLock {
+                                startTunnelLocked(profile, strategy)
+                            }
+                        }
+                        return@launch
+                    } else {
+                        Log.w(TAG, "No WireGuard handshake after ${HANDSHAKE_TIMEOUT_MS / 1000}s; tearing down")
+                        // Do not leave Android routing all traffic into a dead tunnel.
+                        tunnelMutex.withLock {
+                            releaseTunnelLocked()
+                        }
+                        if (TunnelManager.vpnHandle == -1) {
+                            TunnelManager.updateState(
+                                TunnelStatus.ERROR,
+                                "Handshake не получен за ${HANDSHAKE_TIMEOUT_MS / 1000} с. Смените профиль или стратегию."
+                            )
+                        }
+                        stopForeground(STOP_FOREGROUND_REMOVE)
+                        stopSelf()
+                        return@launch
+                    }
                 }
-                if (TunnelManager.vpnHandle == -1) {
-                    TunnelManager.updateState(
-                        TunnelStatus.ERROR,
-                        "Handshake не получен за ${HANDSHAKE_TIMEOUT_MS / 1000} с. Смените профиль или стратегию."
-                    )
+            }
+
+            if (!repository.isAutoReconnectEnabled()) return@launch
+
+            // Auto-reconnect watchdog if connection drops after initial handshake
+            var staleCount = 0
+            while (isActive && TunnelManager.vpnHandle == handle) {
+                delay(5000)
+                val configDump = try {
+                    GoBackend.wgGetConfig(handle)
+                } catch (e: Exception) {
+                    null
                 }
-                stopForeground(STOP_FOREGROUND_REMOVE)
-                stopSelf()
+                val stats = TunnelManager.parseUapiStats(configDump)
+                val nowSec = System.currentTimeMillis() / 1000
+                if (stats.lastHandshakeSec > 0L && (nowSec - stats.lastHandshakeSec) > 150) {
+                    staleCount++
+                    if (staleCount >= 4) {
+                        Log.w(TAG, "Connection lost (handshake stale for ${nowSec - stats.lastHandshakeSec}s); auto-reconnecting...")
+                        TunnelManager.updateState(TunnelStatus.CONNECTING, "Восстановление соединения...")
+                        tunnelMutex.withLock {
+                            releaseTunnelLocked()
+                        }
+                        delay(2000)
+                        if (isActive && !destroyed) {
+                            tunnelMutex.withLock {
+                                startTunnelLocked(profile, strategy)
+                            }
+                        }
+                        return@launch
+                    }
+                } else {
+                    staleCount = 0
+                }
             }
         }
     }
@@ -335,6 +432,8 @@ class TravonetVpnService : VpnService() {
      * @return the native handle that was released, or -1.
      */
     private fun releaseTunnelLocked(): Int {
+        releaseWakeLock()
+        unregisterNetworkCallback()
         healthJob?.cancel()
         healthJob = null
         statsJob?.cancel()
@@ -394,6 +493,75 @@ class TravonetVpnService : VpnService() {
         startJob?.cancel()
         releaseTunnelLocked()
         super.onDestroy()
+    }
+
+    private fun registerNetworkCallback() {
+        if (defaultNetworkCallback != null) return
+        val cm = getSystemService(Context.CONNECTIVITY_SERVICE) as? ConnectivityManager ?: return
+        connectivityManager = cm
+        val callback = object : ConnectivityManager.NetworkCallback() {
+            override fun onAvailable(network: Network) {
+                if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.P) {
+                    setUnderlyingNetworks(arrayOf(network))
+                }
+            }
+
+            override fun onLost(network: Network) {
+                if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.P) {
+                    setUnderlyingNetworks(null)
+                }
+            }
+
+            override fun onCapabilitiesChanged(network: Network, networkCapabilities: NetworkCapabilities) {
+                if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.P) {
+                    setUnderlyingNetworks(arrayOf(network))
+                }
+            }
+        }
+        try {
+            cm.registerDefaultNetworkCallback(callback)
+            defaultNetworkCallback = callback
+        } catch (e: Exception) {
+            Log.w(TAG, "Failed to register default network callback", e)
+        }
+    }
+
+    private fun unregisterNetworkCallback() {
+        defaultNetworkCallback?.let {
+            try {
+                connectivityManager?.unregisterNetworkCallback(it)
+            } catch (e: Exception) {
+                Log.w(TAG, "Failed to unregister network callback", e)
+            }
+            defaultNetworkCallback = null
+        }
+    }
+
+    private fun acquireWakeLock() {
+        if (wakeLock?.isHeld == true) return
+        try {
+            val powerManager = getSystemService(Context.POWER_SERVICE) as? PowerManager
+            wakeLock = powerManager?.newWakeLock(PowerManager.PARTIAL_WAKE_LOCK, "TravonetWG::VpnWakeLock")?.apply {
+                setReferenceCounted(false)
+                acquire(12 * 60 * 60 * 1000L) // 12 hours max safety timeout
+            }
+            Log.d(TAG, "WakeLock acquired")
+        } catch (e: Exception) {
+            Log.w(TAG, "Failed to acquire wake lock", e)
+        }
+    }
+
+    private fun releaseWakeLock() {
+        try {
+            if (wakeLock?.isHeld == true) {
+                wakeLock?.release()
+                Log.d(TAG, "WakeLock released")
+            }
+        } catch (e: Exception) {
+            Log.w(TAG, "Failed to release wake lock", e)
+        } finally {
+            wakeLock = null
+        }
     }
 
     private fun createNotificationChannel() {

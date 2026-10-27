@@ -223,4 +223,57 @@ class TravonetUnitTest {
         )
         assertTrue(config.contains("Endpoint = 162.159.192.6:2408"))
     }
+
+    @Test
+    fun testResolveEndpointIpv4Preserved() {
+        val endpoint = "162.159.192.1:2408"
+        val resolved = WgConfigParser.resolveEndpointToIpv4(endpoint)
+        assertEquals("162.159.192.1:2408", resolved)
+    }
+
+    @Test
+    fun testResolveEndpointDomainLocalhost() {
+        val endpoint = "localhost:51820"
+        val resolved = WgConfigParser.resolveEndpointToIpv4(endpoint)
+        assertEquals("127.0.0.1:51820", resolved)
+    }
+
+    @Test
+    fun testResolveConfigEndpointsReplacesDomain() {
+        val raw = """
+            [Interface]
+            PrivateKey = OCugIHnrk/r8Zdtd5AGYIchdMag+dqXF08yn1AZ2aUw=
+            Address = 172.16.0.2/32
+            
+            [Peer]
+            PublicKey = bmXOC+F1FxEMF9dyiK2H5/1SUtzH0JuVo51h2wPfgyo=
+            Endpoint = localhost:2408
+            AllowedIPs = 0.0.0.0/0
+        """.trimIndent()
+
+        val resolved = WgConfigParser.resolveConfigEndpoints(raw)
+        assertTrue(resolved.contains("Endpoint = 127.0.0.1:2408"))
+        assertFalse(resolved.contains("localhost:2408"))
+    }
+
+    @Test
+    fun testNormalizeRelayUrlConvertsCyrillicDomainToPunycode() {
+        val raw = "https://larp.футанари.рф/register"
+        val normalized = WarpGenerator.normalizeRelayUrl(raw)
+        assertEquals("https://larp.xn--80aaysqigh.xn--p1ai/register", normalized)
+    }
+
+    @Test
+    fun testDemoProfileIdentified() {
+        val sample = WgConfigParser.parseProfile("Демо-сервер WireGuard (Пример)", sampleConfigWithoutStrategy)
+        assertTrue(sample.name.lowercase().contains("демо"))
+    }
+
+    @Test
+    fun testPingHelperExtractHost() {
+        assertEquals("162.159.192.1", com.travonet.wireguard.service.PingHelper.extractHost("162.159.192.1:2408"))
+        assertEquals("engage.cloudflareclient.com", com.travonet.wireguard.service.PingHelper.extractHost("engage.cloudflareclient.com:2408"))
+        assertEquals("2606:4700:d0::a29f:c001", com.travonet.wireguard.service.PingHelper.extractHost("[2606:4700:d0::a29f:c001]:2408"))
+        assertEquals("1.1.1.1", com.travonet.wireguard.service.PingHelper.extractHost("1.1.1.1"))
+    }
 }

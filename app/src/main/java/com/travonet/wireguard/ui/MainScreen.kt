@@ -1,13 +1,21 @@
 package com.travonet.wireguard.ui
 
+import android.content.ClipboardManager
 import android.content.Context
 import android.widget.Toast
+import androidx.activity.compose.rememberLauncherForActivityResult
+import androidx.activity.result.contract.ActivityResultContracts
+import androidx.compose.animation.core.FastOutSlowInEasing
+import androidx.compose.animation.core.animateFloatAsState
+import androidx.compose.animation.core.tween
 import androidx.compose.foundation.layout.*
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.*
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.draw.rotate
+import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
@@ -16,9 +24,13 @@ import com.travonet.wireguard.model.EvasionStrategy
 import com.travonet.wireguard.model.TunnelMode
 import com.travonet.wireguard.model.WarpRelayMode
 import com.travonet.wireguard.model.WgProfile
+import com.travonet.wireguard.parser.WgConfigParser
 import com.travonet.wireguard.repository.AppRepository
+import com.travonet.wireguard.service.PingHelper
+import com.travonet.wireguard.service.PingResult
 import com.travonet.wireguard.service.TunnelManager
 import com.travonet.wireguard.ui.components.BottomControlBar
+import com.travonet.wireguard.ui.dialogs.AddEditProfileDialog
 import com.travonet.wireguard.ui.dialogs.AppSettingsDialog
 import com.travonet.wireguard.ui.dialogs.WarpProgressDialog
 import com.travonet.wireguard.ui.dialogs.WarpRelayDialog
@@ -30,6 +42,8 @@ import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 import org.travonet.backend.GoBackend
+import java.io.BufferedReader
+import java.io.InputStreamReader
 
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
@@ -53,6 +67,15 @@ fun MainScreen(
     var showSettingsDialog by remember { mutableStateOf(false) }
     var showInfoDialog by remember { mutableStateOf(false) }
 
+    var showAddresses by remember { mutableStateOf(repository.isShowAddressesEnabled()) }
+    var pingResults by remember { mutableStateOf<Map<String, PingResult>>(emptyMap()) }
+    var isTestingAll by remember { mutableStateOf(false) }
+
+    var isPingingBottom by remember { mutableStateOf(false) }
+    var bottomPingLatency by remember { mutableStateOf<Long?>(null) }
+
+    var isAddingProfile by remember { mutableStateOf(false) }
+
     var warpUiState by remember { mutableStateOf<WarpUiState?>(null) }
     var showWarpRelayDialog by remember { mutableStateOf(false) }
     var warpRelayMode by remember { mutableStateOf(repository.getWarpRelayMode()) }
@@ -62,6 +85,53 @@ fun MainScreen(
 
     val activeFallbackStrategy = remember(strategies, selectedStrategyId) {
         strategies.firstOrNull { it.id == selectedStrategyId } ?: strategies.first()
+    }
+
+    // File picker launcher
+    val filePickerLauncher = rememberLauncherForActivityResult(
+        contract = ActivityResultContracts.GetContent()
+    ) { uri ->
+        if (uri != null) {
+            try {
+                val inputStream = context.contentResolver.openInputStream(uri)
+                val reader = BufferedReader(InputStreamReader(inputStream))
+                val content = reader.readText()
+                reader.close()
+
+                val fileName = uri.lastPathSegment?.substringAfterLast('/')?.removeSuffix(".conf")
+                    ?: "Импортированный профиль"
+                val profile = WgConfigParser.parseProfile(fileName, content)
+                repository.addOrUpdateProfile(profile)
+                profiles = repository.getProfiles()
+                selectedProfileId = profile.id
+                repository.setSelectedProfileId(profile.id)
+                selectedTab = 0
+                Toast.makeText(context, "Конфигурация импортирована!", Toast.LENGTH_SHORT).show()
+            } catch (e: Exception) {
+                Toast.makeText(context, "Ошибка чтения файла: ${e.localizedMessage}", Toast.LENGTH_LONG).show()
+            }
+        }
+    }
+
+    fun pasteFromClipboard() {
+        val cm = context.getSystemService(Context.CLIPBOARD_SERVICE) as ClipboardManager
+        val clip = cm.primaryClip
+        if (clip != null && clip.itemCount > 0) {
+            val text = clip.getItemAt(0).text?.toString() ?: ""
+            if (text.contains("[Interface]", ignoreCase = true)) {
+                val profile = WgConfigParser.parseProfile("Профиль из буфера", text)
+                repository.addOrUpdateProfile(profile)
+                profiles = repository.getProfiles()
+                selectedProfileId = profile.id
+                repository.setSelectedProfileId(profile.id)
+                selectedTab = 0
+                Toast.makeText(context, "Импортировано из буфера!", Toast.LENGTH_SHORT).show()
+            } else {
+                Toast.makeText(context, "Буфер обмена не содержит конфигурацию WireGuard", Toast.LENGTH_SHORT).show()
+            }
+        } else {
+            Toast.makeText(context, "Буфер обмена пуст", Toast.LENGTH_SHORT).show()
+        }
     }
 
     fun generateWarp() {
@@ -92,6 +162,68 @@ fun MainScreen(
         }
     }
 
+    fun pingAllProfiles() {
+        if (isTestingAll || profiles.isEmpty()) return
+        isTestingAll = true
+        scope.launch {
+            for (profile in profiles) {
+                pingResults = pingResults + (profile.id to PingResult(isTesting = true))
+                val udpPing = PingHelper.pingUdpHost(profile.endpoint)
+                if (udpPing != null) {
+                    val strategy = if (profile.hasEmbeddedStrategy) {
+                        val embedded = profile.embeddedStrategy ?: activeFallbackStrategy.name
+                        strategies.firstOrNull { it.name.equals(embedded, ignoreCase = true) } ?: activeFallbackStrategy
+                    } else {
+                        activeFallbackStrategy
+                    }
+                    val httpPing = PingHelper.pingHttp204(profile, strategy)
+                    pingResults = pingResults + (profile.id to PingResult(
+                        udpPingMs = udpPing,
+                        udpError = false,
+                        httpPingMs = httpPing,
+                        httpError = httpPing == null,
+                        isTesting = false
+                    ))
+                } else {
+                    pingResults = pingResults + (profile.id to PingResult(
+                        udpPingMs = null,
+                        udpError = true,
+                        httpPingMs = null,
+                        httpError = true,
+                        isTesting = false
+                    ))
+                }
+            }
+            isTestingAll = false
+        }
+    }
+
+    fun pingSelectedProfile() {
+        val activeProf = profiles.firstOrNull { it.id == selectedProfileId } ?: profiles.firstOrNull()
+        if (activeProf == null) {
+            Toast.makeText(context, "Выберите конфигурацию для пинга!", Toast.LENGTH_SHORT).show()
+            return
+        }
+        if (isPingingBottom) return
+        isPingingBottom = true
+        scope.launch {
+            val strategy = if (activeProf.hasEmbeddedStrategy) {
+                val embedded = activeProf.embeddedStrategy ?: activeFallbackStrategy.name
+                strategies.firstOrNull { it.name.equals(embedded, ignoreCase = true) } ?: activeFallbackStrategy
+            } else {
+                activeFallbackStrategy
+            }
+            val latency = PingHelper.pingHttp204(activeProf, strategy)
+            bottomPingLatency = latency
+            isPingingBottom = false
+            if (latency != null) {
+                Toast.makeText(context, "Ping: $latency мс (Google 204)", Toast.LENGTH_SHORT).show()
+            } else {
+                Toast.makeText(context, "Ошибка пинга (Google 204 недоступен)", Toast.LENGTH_SHORT).show()
+            }
+        }
+    }
+
     Scaffold(
         modifier = modifier.fillMaxSize(),
         topBar = {
@@ -117,12 +249,14 @@ fun MainScreen(
                         IconButton(onClick = { showSettingsDialog = true }) {
                             Icon(Icons.Default.Settings, contentDescription = "Настройки")
                         }
-                        IconButton(
-                            onClick = { generateWarp() },
-                            enabled = warpUiState !is WarpUiState.Running
-                        ) {
-                            Icon(Icons.Default.Cloud, contentDescription = "Сгенерировать WARP")
-                        }
+
+                        AddConfigMenuButton(
+                            onPasteFromClipboard = { pasteFromClipboard() },
+                            onImportFromFile = { filePickerLauncher.launch("*/*") },
+                            onGenerateWarp = { generateWarp() },
+                            onCreateManual = { isAddingProfile = true }
+                        )
+
                         IconButton(onClick = { showInfoDialog = true }) {
                             Icon(Icons.Default.Info, contentDescription = "О программе")
                         }
@@ -182,7 +316,12 @@ fun MainScreen(
                 },
                 onStopClick = {
                     TunnelManager.stop(context)
-                }
+                },
+                onPingClick = {
+                    pingSelectedProfile()
+                },
+                isPinging = isPingingBottom,
+                pingLatency = bottomPingLatency
             )
         }
     ) { innerPadding ->
@@ -196,6 +335,10 @@ fun MainScreen(
                     profiles = profiles,
                     selectedProfileId = selectedProfileId,
                     fallbackStrategy = activeFallbackStrategy,
+                    showAddresses = showAddresses,
+                    pingResults = pingResults,
+                    isTestingAll = isTestingAll,
+                    onPingAllProfiles = { pingAllProfiles() },
                     onSelectProfile = { id ->
                         selectedProfileId = id
                         repository.setSelectedProfileId(id)
@@ -208,7 +351,11 @@ fun MainScreen(
                         repository.deleteProfile(id)
                         profiles = repository.getProfiles()
                         selectedProfileId = repository.getSelectedProfileId()
-                    }
+                    },
+                    onGenerateWarp = { generateWarp() },
+                    onOpenAddManual = { isAddingProfile = true },
+                    onPasteFromClipboard = { pasteFromClipboard() },
+                    onImportFromFile = { filePickerLauncher.launch("*/*") }
                 )
 
                 1 -> StrategiesScreen(
@@ -236,27 +383,31 @@ fun MainScreen(
         AppSettingsDialog(
             currentSocksAddr = socksAddr,
             currentRelayMode = warpRelayMode,
-            customRelayUrl = repository.getCustomWarpRelayUrl(),
-            customRelayToken = repository.getCustomWarpRelayToken(),
+            customRelayUrl = warpRelayUrl,
+            customRelayToken = warpRelayToken,
             builtInRelayUrl = repository.getBuiltInWarpRelayUrl(),
+            isForegroundService = repository.isForegroundServiceEnabled(),
+            isWakeLock = repository.isWakeLockEnabled(),
+            isAutoReconnect = repository.isAutoReconnectEnabled(),
+            isShowAddresses = showAddresses,
             onDismiss = { showSettingsDialog = false },
-            onSave = { newAddr, relayMode, relayUrl, relayToken ->
-                socksAddr = newAddr
-                repository.setSocksListenAddr(newAddr)
+            onSave = { newSocksAddr, relayMode, relayUrl, relayToken, fgService, wakeLock, autoReconnect, newShowAddresses ->
+                socksAddr = newSocksAddr
+                repository.setSocksListenAddr(newSocksAddr)
                 repository.saveWarpRelaySettings(relayMode, relayUrl, relayToken)
+                repository.setForegroundServiceEnabled(fgService)
+                repository.setWakeLockEnabled(wakeLock)
+                repository.setAutoReconnectEnabled(autoReconnect)
+                repository.setShowAddressesEnabled(newShowAddresses)
+                showAddresses = newShowAddresses
                 warpRelayMode = repository.getWarpRelayMode()
                 warpRelayUrl = repository.getWarpRelayUrl()
                 warpRelayToken = repository.getWarpRelayToken()
                 showSettingsDialog = false
 
-                val relaySummary = when (relayMode) {
-                    WarpRelayMode.AUTO -> "встроенный релей"
-                    WarpRelayMode.CUSTOM -> "свой релей"
-                    WarpRelayMode.NONE -> "без релея"
-                }
                 Toast.makeText(
                     context,
-                    "Настройки сохранены: $relaySummary",
+                    "Настройки сохранены",
                     Toast.LENGTH_SHORT
                 ).show()
             }
@@ -300,6 +451,22 @@ fun MainScreen(
         )
     }
 
+    if (isAddingProfile) {
+        AddEditProfileDialog(
+            profile = null,
+            onGenerateWarp = { generateWarp() },
+            onDismiss = { isAddingProfile = false },
+            onSave = { newProfile ->
+                repository.addOrUpdateProfile(newProfile)
+                profiles = repository.getProfiles()
+                selectedProfileId = newProfile.id
+                repository.setSelectedProfileId(newProfile.id)
+                isAddingProfile = false
+                Toast.makeText(context, "Конфигурация сохранена", Toast.LENGTH_SHORT).show()
+            }
+        )
+    }
+
     warpUiState?.let { state ->
         WarpProgressDialog(
             state = state,
@@ -332,5 +499,75 @@ fun MainScreen(
             },
             onDismiss = { showWarpRelayDialog = false }
         )
+    }
+}
+
+@Composable
+private fun AddConfigMenuButton(
+    onPasteFromClipboard: () -> Unit,
+    onImportFromFile: () -> Unit,
+    onGenerateWarp: () -> Unit,
+    onCreateManual: () -> Unit
+) {
+    var expanded by remember { mutableStateOf(false) }
+    val rotation by animateFloatAsState(
+        targetValue = if (expanded) 45f else 0f,
+        animationSpec = tween(durationMillis = 150, easing = FastOutSlowInEasing),
+        label = "plus_rotation"
+    )
+
+    Box {
+        IconButton(onClick = { expanded = !expanded }) {
+            Icon(
+                imageVector = Icons.Default.Add,
+                contentDescription = "Добавить конфигурацию",
+                modifier = Modifier.graphicsLayer { rotationZ = rotation }
+            )
+        }
+        DropdownMenu(
+            expanded = expanded,
+            onDismissRequest = { expanded = false }
+        ) {
+            DropdownMenuItem(
+                text = { Text("Вставить из буфера") },
+                leadingIcon = {
+                    Icon(Icons.Default.ContentPaste, contentDescription = null)
+                },
+                onClick = {
+                    expanded = false
+                    onPasteFromClipboard()
+                }
+            )
+            DropdownMenuItem(
+                text = { Text("Импорт из файла") },
+                leadingIcon = {
+                    Icon(Icons.Default.FileOpen, contentDescription = null)
+                },
+                onClick = {
+                    expanded = false
+                    onImportFromFile()
+                }
+            )
+            DropdownMenuItem(
+                text = { Text("Сгенерировать WARP") },
+                leadingIcon = {
+                    Icon(Icons.Default.Cloud, contentDescription = null)
+                },
+                onClick = {
+                    expanded = false
+                    onGenerateWarp()
+                }
+            )
+            DropdownMenuItem(
+                text = { Text("Создать вручную") },
+                leadingIcon = {
+                    Icon(Icons.Default.Add, contentDescription = null)
+                },
+                onClick = {
+                    expanded = false
+                    onCreateManual()
+                }
+            )
+        }
     }
 }
